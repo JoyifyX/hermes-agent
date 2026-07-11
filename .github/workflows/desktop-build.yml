@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   # ────────────────────────────────────────────────────────
-  # macOS (DMG + zip)
+  # macOS (DMG + zip) — produces both x64 and arm64 installers
   # ────────────────────────────────────────────────────────
   macos:
     runs-on: macos-latest
@@ -96,26 +96,56 @@ jobs:
             fi
           fi
 
-      - name: Upload DMG
+      - name: Upload macOS DMG (arm64 — Apple Silicon)
         uses: actions/upload-artifact@v4
         with:
-          name: Hermes-macOS-${{ github.sha }}
-          path: apps/desktop/release/Hermes-*.dmg
+          name: Hermes-macOS-arm64-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-mac-arm64.dmg
           retention-days: 30
+          if-no-files-found: error
 
-      - name: Upload zip
+      - name: Upload macOS DMG (x64 — Intel)
         uses: actions/upload-artifact@v4
         with:
-          name: Hermes-macOS-zip-${{ github.sha }}
-          path: apps/desktop/release/Hermes-*.zip
+          name: Hermes-macOS-x64-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-mac-x64.dmg
           retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload macOS zip (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-macOS-zip-arm64-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-mac-arm64.zip
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload macOS zip (x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-macOS-zip-x64-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-mac-x64.zip
+          retention-days: 30
+          if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────
-  # Windows (NSIS installer + MSI)
+  # Windows (NSIS installer + MSI) — produces per-arch installers
+  # x64 on windows-latest, arm64 on windows-11-arm
   # ────────────────────────────────────────────────────────
   windows:
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            artifact_suffix: x64
+          - arch: arm64
+            runner: windows-11-arm
+            artifact_suffix: arm64
+    name: windows-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,17 +159,20 @@ jobs:
       - name: Install workspace deps
         run: npm ci
 
-      - name: Build & package (NSIS + MSI)
+      - name: Build & package (NSIS + MSI) for ${{ matrix.arch }}
         working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
         run: npm run dist:win
 
-      - name: Report artifact sizes (Windows)
+      - name: Report artifact sizes (Windows ${{ matrix.arch }})
         if: always()
         shell: pwsh
         env:
           BASELINE_DMG_MB: ${{ github.event.inputs.baseline_dmg_mb }}
+          REPORT_ARCH: ${{ matrix.arch }}
         run: |
-          Write-Host "===== Windows artifact sizes ====="
+          Write-Host "===== Windows artifact sizes (arch: $env:REPORT_ARCH) ====="
 
           $releaseDir = 'apps/desktop/release'
           if (-not (Test-Path -LiteralPath $releaseDir)) {
@@ -162,30 +195,26 @@ jobs:
 
           $baseline = $env:BASELINE_DMG_MB
           if (-not [string]::IsNullOrWhiteSpace($baseline)) {
-            Write-Host "BASELINE=${baseline}MB (provided — informational only on Windows job; macOS job enforces)"
-            try {
-              $baselineNum = [double]$baseline
-              if ($baselineNum -le 0) {
-                Write-Host "::warning::baseline_dmg_mb='$baseline' is not a positive number; skipping comparison."
-              }
-            } catch {
-              Write-Host "::warning::baseline_dmg_mb='$baseline' is not a number; skipping comparison."
-            }
+            Write-Host "BASELINE=${baseline}MB (informational only; macOS job enforces)"
           }
 
-      - name: Upload NSIS installer
+      - name: Upload NSIS installer (${{ matrix.arch }})
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Hermes-Windows-${{ github.sha }}
-          path: apps/desktop/release/Hermes-*.exe
+          name: Hermes-Windows-${{ matrix.artifact_suffix }}-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-win-${{ matrix.arch }}.exe
           retention-days: 30
+          if-no-files-found: error
 
-      - name: Upload MSI installer
+      - name: Upload MSI installer (${{ matrix.arch }})
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Hermes-Windows-MSI-${{ github.sha }}
-          path: apps/desktop/release/Hermes-*.msi
+          name: Hermes-Windows-MSI-${{ matrix.artifact_suffix }}-${{ github.sha }}
+          path: apps/desktop/release/Hermes-*-win-${{ matrix.arch }}.msi
           retention-days: 30
+          if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────
   # Linux (AppImage + deb + rpm)
@@ -236,7 +265,6 @@ jobs:
             | xargs -0 wc -c 2>/dev/null \
             | tail -n 1 \
             | awk '{print $1}')
-          # If no files matched, wc -c outputs nothing — coerce to 0
           total_bytes=${total_bytes:-0}
           total_mb=$(awk -v b="$total_bytes" 'BEGIN {printf "%.1f", b/1024/1024}')
           echo "TOTAL=${total_mb}MB"
